@@ -783,6 +783,12 @@ impl super::Screen for ControlsMenu {
             .colour((0, 0, 0, 100))
             .create(ui_container);
 
+        ui::TextBuilder::new()
+            .text("Controls")
+            .position(0.0, 20.0)
+            .alignment(ui::VAttach::Top, ui::HAttach::Center)
+            .create(ui_container);
+
         let done_button = ui::ButtonBuilder::new()
             .position(0.0, 50.0)
             .size(300.0, 40.0)
@@ -810,7 +816,7 @@ impl super::Screen for ControlsMenu {
         {
             let mut slider = slider.borrow_mut();
             let txt = ui::TextBuilder::new()
-                .text(format!("Mouse Sensetivity: {:.2}x", r_mouse_sens))
+                .text(format!("Mouse Sensitivity: {:.2}x", r_mouse_sens))
                 .alignment(ui::VAttach::Middle, ui::HAttach::Center)
                 .attach(&mut *slider);
             slider.add_text(txt);
@@ -831,13 +837,46 @@ impl super::Screen for ControlsMenu {
                     .expect("Slider had no text")
                     .borrow_mut()
                     .text = format!(
-                    "Mouse Sensetivity: {:.2}x",
+                    "Mouse Sensitivity: {:.2}x",
                     game.settings.get_float(FloatSetting::MouseSense)
                 );
                 true
             });
         }
 
+        sliders.push(slider);
+
+        let r_ui_scale = self.settings.get_float(FloatSetting::UIScale).max(0.5).min(4.0);
+        let slider = ui::SliderBuilder::new()
+            .position(-160.0, -50.0)
+            .size(300.0, 40.0)
+            .alignment(ui::VAttach::Middle, ui::HAttach::Center)
+            .create(ui_container);
+        {
+            let mut slider = slider.borrow_mut();
+            let txt = ui::TextBuilder::new()
+                .text(format!("UI Scale: {:.1}x", r_ui_scale))
+                .alignment(ui::VAttach::Middle, ui::HAttach::Center)
+                .attach(&mut *slider);
+            slider.add_text(txt);
+            // Map 0.5–4.0 range onto the -150..+150 slider range
+            slider.button.as_mut().unwrap().borrow_mut().x = (r_ui_scale - 0.5) / 3.5 * 300.0 - 150.0;
+            slider.add_click_func(|this, game| {
+                let screen_width = game.screen_sys.screens.read().last().unwrap().last_width as f64;
+                let slider_btn = this.button.as_mut().expect("Slider had no button");
+                slider_btn.borrow_mut().x = (game.get_last_mouse_x()) - screen_width / 2.0 - this.x;
+                let scale = ((slider_btn.borrow().x + 150.0) / 300.0 * 3.5 + 0.5)
+                    .max(0.5)
+                    .min(4.0);
+                game.settings.set_float(FloatSetting::UIScale, scale);
+                this.text
+                    .as_mut()
+                    .expect("Slider had no text")
+                    .borrow_mut()
+                    .text = format!("UI Scale: {:.1}x", scale);
+                true
+            });
+        }
         sliders.push(slider);
 
         self.elements = Some(UIElements {

@@ -52,8 +52,8 @@ pub mod microsoft;
 pub mod offline_acc;
 
 pub const SUPPORTED_PROTOCOLS: [i32; 22] = [
-    765, 754, 753, 751, 736, 735, 578, 575, 498, 490, 485, 480, 477, 404, 340, 316, 315, 210, 109,
-    107, 47, 5,
+    754, 753, 751, 736, 735, 578, 575, 498, 490, 485, 480, 477, 404, 340, 316, 315, 210, 109, 107,
+    47, 5, 765,
 ];
 
 static CURRENT_PROTOCOL_VERSION: AtomicI32 = AtomicI32::new(SUPPORTED_PROTOCOLS[0]);
@@ -372,7 +372,7 @@ impl Serializable for String {
         debug_assert!(len <= 65536, "String length too big: {}", len);
         let mut bytes = Vec::<u8>::new();
         buf.take(len as u64).read_to_end(&mut bytes)?;
-        let ret = String::from_utf8(bytes).unwrap();
+        let ret = String::from_utf8(bytes).map_err(|e| Error::Err(format!("Invalid UTF-8 in string: {}", e)))?;
         Ok(ret)
     }
     fn write_to<W: io::Write>(&self, buf: &mut W) -> Result<(), Error> {
@@ -388,7 +388,7 @@ impl Serializable for format::Component {
         let len = VarInt::read_from(buf)?.0;
         let mut bytes = Vec::<u8>::new();
         buf.take(len as u64).read_to_end(&mut bytes)?;
-        let ret = String::from_utf8(bytes).unwrap();
+        let ret = String::from_utf8(bytes).map_err(|e| Error::Err(format!("Invalid UTF-8 in component: {}", e)))?;
         Ok(Self::from_str(&ret[..]))
     }
     fn write_to<W: io::Write>(&self, buf: &mut W) -> Result<(), Error> {
@@ -1182,7 +1182,19 @@ impl Conn {
     }
 
     fn try_stream(address: &str, port: u16, protocol_version: i32) -> Result<Conn, Error> {
-        let stream = TcpStream::connect(format!("{}:{}", address, port))?;
+        use std::net::ToSocketAddrs;
+        use std::time::Duration;
+
+        let addr = format!("{}:{}", address, port)
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| Error::Err(format!("Could not resolve address: {}", address)))?;
+
+        // 10-second connect timeout so a dead server doesn't block the UI thread.
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
+        // Disable Nagle's algorithm so small packets (keep-alives, etc.) are sent immediately
+        // rather than being buffered, which can cause spurious timeouts under light load.
+        stream.set_nodelay(true)?;
         Ok(Conn {
             stream,
             host: address.to_string(),
@@ -1467,10 +1479,14 @@ impl Conn {
                     if let Some(Value::Array(items)) = modinfo.get("modList") {
                         for item in items {
                             if let Value::Object(obj) = item {
-                                let modid = obj.get("modid").unwrap().as_str().unwrap().to_string();
-                                let version =
-                                    obj.get("version").unwrap().as_str().unwrap().to_string();
-
+                                let modid = obj.get("modid")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                let version = obj.get("version")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("?")
+                                    .to_string();
                                 forge_mods
                                     .push(crate::protocol::forge::ForgeMod { modid, version });
                             }
@@ -1490,22 +1506,21 @@ impl Conn {
             if let Some(Value::Array(items)) = forge_data.get("mods") {
                 for item in items {
                     if let Value::Object(obj) = item {
-                        let modid = obj.get("modId").unwrap().as_str().unwrap().to_string();
-                        let modmarker = obj.get("modmarker").unwrap().as_str().unwrap().to_string();
-
-                        let version = modmarker;
-
+                        let modid = obj.get("modId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let version = obj.get("modmarker")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?")
+                            .to_string();
                         forge_mods.push(crate::protocol::forge::ForgeMod { modid, version });
                     }
                 }
             }
-            fml_network_version = Some(
-                forge_data
-                    .get("fmlNetworkVersion")
-                    .unwrap()
-                    .as_i64()
-                    .unwrap(),
-            );
+            fml_network_version = forge_data
+                .get("fmlNetworkVersion")
+                .and_then(Value::as_i64);
         }
 
         Ok((
